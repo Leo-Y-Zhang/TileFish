@@ -18,6 +18,8 @@ try {
   process.exit(2);
 }
 
+// Play becomes ready after checkPending receives engine validation and scoring.
+const PLAY_READY_TIMEOUT = 60000;
 const DIST = path.join(__dirname, "dist");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".json": "application/json",
   ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".txt": "text/plain" };
@@ -34,13 +36,54 @@ function serve() {
 }
 
 const errors = [];
+const pageLogs = new WeakMap();
 function check(cond, what) {
   if (!cond) throw new Error("FAIL: " + what);
   console.log("  ok    " + what);
 }
 function watch(page, tag) {
-  page.on("pageerror", (e) => errors.push(tag + " page error: " + e.message));
-  page.on("console", (m) => { if (m.type() === "error") errors.push(tag + " console error: " + m.text()); });
+  const logs = { consoleMessages: [], pageErrors: [] };
+  pageLogs.set(page, logs);
+  page.on("pageerror", (e) => {
+    logs.pageErrors.push(e.stack || e.message);
+    errors.push(tag + " page error: " + e.message);
+  });
+  page.on("console", (m) => {
+    logs.consoleMessages.push(m.type() + ": " + m.text());
+    if (logs.consoleMessages.length > 20) logs.consoleMessages.shift();
+    if (m.type() === "error") errors.push(tag + " console error: " + m.text());
+  });
+}
+async function waitFor(page, label, wait) {
+  try {
+    return await wait();
+  } catch (e) {
+    if (e.name === "TimeoutError") {
+      let timer;
+      try {
+        console.error("Timeout waiting for " + label);
+        console.error("Page logs:", pageLogs.get(page));
+        // Bound diagnostics too, in case the page no longer responds.
+        const state = await Promise.race([
+          page.evaluate(() => ({
+            mode: typeof G === "undefined" ? null : G?.mode,
+            busy: typeof busy === "undefined" ? null : busy,
+            analysing: typeof analysing === "undefined" ? null : analysing,
+            playDisabled: document.getElementById("btn-play")?.disabled ?? null,
+            pendingTiles: typeof pending === "undefined" ? null : pending.size,
+          })),
+          new Promise((resolve) => { timer = setTimeout(() => resolve("page state unavailable after 5 s"), 5000); }),
+        ]);
+        console.error("Page state:", state);
+      } catch (diagnosticError) {
+        // A closed page or failed evaluation must not replace the original timeout.
+        try { console.error("Could not collect page state:", diagnosticError.message); } catch (_) { /* best effort */ }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw e;
+  }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -59,7 +102,7 @@ async function launch() {
   try {
     // The page makes itself cross-origin isolated on the first visit (one reload).
     await p.goto(base + "?seed=2026");
-    await p.waitForFunction(() => self.crossOriginIsolated, null, { timeout: 30000 });
+    await waitFor(p, "service worker isolation", () => p.waitForFunction(() => self.crossOriginIsolated, null, { timeout: 30000 }));
     check(true, "the page is cross-origin isolated (service worker)");
     await sleep(500);
     await p.evaluate(() => localStorage.setItem("tilefish.reviewSecs", "0.3"));
@@ -68,37 +111,37 @@ async function launch() {
     await p.click('#start [data-v="ENABLE"]');
     await p.click('#start [data-name="clock"] [data-v="0"]');
     await p.click("#btn-start");
-    const myTurn = () => p.waitForFunction(() => S && !busy && (humanTurn() || G.over), null, { timeout: 60000 });
-    await myTurn();
+    const myTurn = (label) => waitFor(p, label, () => p.waitForFunction(() => S && !busy && (humanTurn() || G.over), null, { timeout: 60000 }));
+    await myTurn("practice game starts");
     check(await p.evaluate(() => S.rack.length === 7 && S.bag === 86), "a Practice game starts with seven tiles each");
 
     // A hint, its third step, its first move put on the board, and Play.
     await p.click("#btn-hint");
-    await p.waitForFunction(() => !busy && !document.getElementById("hints").hidden, null, { timeout: 30000 });
+    await waitFor(p, "practice hint", () => p.waitForFunction(() => !busy && !document.getElementById("hints").hidden, null, { timeout: 30000 }));
     await p.click("#hint-more");
     await p.click("#hint-more");
     await p.click("#hints [data-move]");
-    await p.waitForFunction(() => !document.getElementById("btn-play").disabled, null, { timeout: 10000 });
+    await waitFor(p, "practice hinted move ready to play", () => p.waitForFunction(() => !document.getElementById("btn-play").disabled, null, { timeout: PLAY_READY_TIMEOUT }));
     await p.click("#btn-play");
-    await myTurn();
+    await myTurn("practice reply to hinted move");
     check(await p.evaluate(() => S.history.length === 2), "a hinted move is played and Tilefish answers");
     await p.click("#btn-takeback");
-    await p.waitForFunction(() => S && !busy && G.record.length === 0, null, { timeout: 30000 });
+    await waitFor(p, "practice take-back", () => p.waitForFunction(() => S && !busy && G.record.length === 0, null, { timeout: 30000 }));
     check(true, "take-back returns to the start");
 
     // To the end with the best static move each turn, through the page's own playMove.
     for (let i = 0; i < 80; i++) {
-      await myTurn();
+      await myTurn("practice turn " + (i + 1));
       if (await p.evaluate(() => G.over)) break;
       const mv = await p.evaluate(async () => (await ui("moves 1")).moves[0].move);
       await p.evaluate((m) => playMove(m), mv);
     }
-    await p.waitForSelector("#end:not([hidden])", { timeout: 30000 });
+    await waitFor(p, "game end card", () => p.waitForSelector("#end:not([hidden])", { timeout: 30000 }));
     check(true, "the game ends with its card: " + (await p.textContent("#end-title")) + " " + (await p.textContent("#end-score")));
 
     // The review judges both sides (a Practice game arrives with its own moves rated).
     await p.click("#btn-review");
-    await p.waitForFunction(() => !analysing && unjudged().length === 0, null, { timeout: 240000 });
+    await waitFor(p, "game review judgements", () => p.waitForFunction(() => !analysing && unjudged().length === 0, null, { timeout: 240000 }));
     const judged = await p.evaluate(() => [Object.keys(G.verdicts).length, S.history.length, document.querySelectorAll(".acc-n").length]);
     check(judged[0] === judged[1] && judged[2] === 2, "the review judges all " + judged[1] + " moves and gives both accuracies");
 
@@ -111,10 +154,10 @@ async function launch() {
     const q = await ctx2.newPage();
     watch(q, "link page");
     await q.goto(base);
-    await q.waitForFunction(() => self.crossOriginIsolated, null, { timeout: 30000 });
+    await waitFor(q, "link page service worker isolation", () => q.waitForFunction(() => self.crossOriginIsolated, null, { timeout: 30000 }));
     await q.evaluate(() => localStorage.setItem("tilefish.reviewSecs", "0.3"));
     await q.goto(link);
-    await q.waitForFunction(() => G && G.mode === "review" && S && S.history.length > 0 && !analysing && unjudged().length === 0, null, { timeout: 240000 });
+    await waitFor(q, "linked game review judgements", () => q.waitForFunction(() => G && G.mode === "review" && S && S.history.length > 0 && !analysing && unjudged().length === 0, null, { timeout: 240000 }));
     check(await q.evaluate(() => S.history.length) === judged[1] && (await q.evaluate(() => location.hash)) === "", "the link opens the same game, judged, and clears the address");
 
     // "Analyse from here", then a hint in the analysis.
@@ -122,41 +165,41 @@ async function launch() {
     await sleep(200);
     await q.click("#rv-analyse");
     await q.click("#setup-go");
-    await q.waitForFunction(() => G && G.mode === "analysis" && S && !busy, null, { timeout: 60000 });
+    await waitFor(q, "analysis from review", () => q.waitForFunction(() => G && G.mode === "analysis" && S && !busy, null, { timeout: 60000 }));
     await q.click("#btn-hint");
-    await q.waitForFunction(() => !busy && !document.getElementById("hints").hidden, null, { timeout: 30000 });
+    await waitFor(q, "analysis hint", () => q.waitForFunction(() => !busy && !document.getElementById("hints").hidden, null, { timeout: 30000 }));
     check(true, "Analyse from here opens the position, and a hint answers in it");
     await ctx2.close();
 
     // The daily puzzle: a weak move is refused, the answer solves it.
     await p.click("#btn-puzzle");
-    await p.waitForFunction(() => G && G.mode === "puzzle" && G.puzzle.answer && !busy && document.querySelector(".pz-task"), null, { timeout: 60000 });
+    await waitFor(p, "daily puzzle ready", () => p.waitForFunction(() => G && G.mode === "puzzle" && G.puzzle.answer && !busy && document.querySelector(".pz-task"), null, { timeout: 60000 }));
     const worst = await p.evaluate(async () => { const r = await ui("moves 40"); const ps = r.moves.filter((m) => !/^(exch|pass)/i.test(m.move)); return ps[ps.length - 1].move; });
     for (const mv of [worst, await p.evaluate(() => G.puzzle.answer)]) {
       await p.evaluate((m) => showHint(m), mv);
-      await p.waitForFunction(() => !document.getElementById("btn-play").disabled, null, { timeout: 10000 });
+      await waitFor(p, "daily puzzle move ready to play: " + (mv === worst ? "weak move" : "answer"), () => p.waitForFunction(() => !document.getElementById("btn-play").disabled, null, { timeout: PLAY_READY_TIMEOUT }));
       await p.click("#btn-play");
-      await p.waitForFunction((n) => !busy && G.puzzle.tries === n, mv === worst ? 1 : 2, { timeout: 60000 });
+      await waitFor(p, "daily puzzle attempt: " + (mv === worst ? "weak move" : "answer"), () => p.waitForFunction((n) => !busy && G.puzzle.tries === n, mv === worst ? 1 : 2, { timeout: 60000 }));
     }
     check(await p.evaluate(() => G.puzzle.solved && G.puzzle.tries === 2), "the daily puzzle refuses a weak move and takes the answer");
 
     // The day's endgame, from the daily puzzle's switch: solved by its answer, logged apart.
     await p.click('.pz-kind button[data-kind="endgame"]');
-    await p.waitForFunction(() => G.puzzle.kind === "endgame" && G.puzzle.daily && G.puzzle.answer && !busy && document.querySelector(".pz-task"), null, { timeout: 300000 });
+    await waitFor(p, "daily endgame ready", () => p.waitForFunction(() => G.puzzle.kind === "endgame" && G.puzzle.daily && G.puzzle.answer && !busy && document.querySelector(".pz-task"), null, { timeout: 300000 }));
     await p.evaluate((m) => showHint(m), await p.evaluate(() => G.puzzle.answer));
-    await p.waitForFunction(() => !document.getElementById("btn-play").disabled, null, { timeout: 10000 });
+    await waitFor(p, "daily endgame answer ready to play", () => p.waitForFunction(() => !document.getElementById("btn-play").disabled, null, { timeout: PLAY_READY_TIMEOUT }));
     await p.click("#btn-play");
-    await p.waitForFunction(() => !busy && (G.puzzle.solved || G.puzzle.tries > 0), null, { timeout: 60000 });
+    await waitFor(p, "daily endgame attempt", () => p.waitForFunction(() => !busy && (G.puzzle.solved || G.puzzle.tries > 0), null, { timeout: 60000 }));
     check(await p.evaluate(() => G.puzzle.solved && !!store.json("puzzles", {})["eg:" + G.puzzle.daily] && /Daily endgame/.test(document.querySelector("#puzzle .panel-head").textContent)),
       "the day's endgame opens from the daily puzzle, is solved by its answer and logged apart");
 
     // An endgame puzzle (the next one, not a daily one), solved exactly, with the best line shown.
     await p.click("#pz-next");
-    await p.waitForFunction(() => G.puzzle.kind === "endgame" && !G.puzzle.daily && G.puzzle.answer && !busy && document.querySelector(".pz-task"), null, { timeout: 90000 });
+    await waitFor(p, "next endgame ready", () => p.waitForFunction(() => G.puzzle.kind === "endgame" && !G.puzzle.daily && G.puzzle.answer && !busy && document.querySelector(".pz-task"), null, { timeout: 90000 }));
     await p.evaluate((m) => showHint(m), await p.evaluate(() => G.puzzle.answer));
-    await p.waitForFunction(() => !document.getElementById("btn-play").disabled, null, { timeout: 10000 });
+    await waitFor(p, "next endgame answer ready to play", () => p.waitForFunction(() => !document.getElementById("btn-play").disabled, null, { timeout: PLAY_READY_TIMEOUT }));
     await p.click("#btn-play");
-    await p.waitForFunction(() => !busy && (G.puzzle.solved || G.puzzle.tries > 0), null, { timeout: 60000 });
+    await waitFor(p, "next endgame attempt", () => p.waitForFunction(() => !busy && (G.puzzle.solved || G.puzzle.tries > 0), null, { timeout: 60000 }));
     check(await p.evaluate(() => G.puzzle.solved && !!document.querySelector("#puzzle .coach-line")), "an endgame puzzle is solved by its answer, and its best line is shown");
     // Even when the answer goes out, a puzzle is not a game: no end card, nothing filed.
     await sleep(700);
@@ -177,12 +220,12 @@ async function launch() {
     // A board set up by hand: a word, a rack, the analysis.
     await p.click('#start [data-v="analysis"]');
     await p.click("#btn-setup");
-    await p.waitForSelector("#setup:not([hidden])", { timeout: 60000 });
+    await waitFor(p, "setup card", () => p.waitForSelector("#setup:not([hidden])", { timeout: 60000 }));
     await p.click('.sq[data-sq="' + (7 * 15 + 6) + '"]');
     await p.keyboard.type("QUIZ");
     await p.fill("#setup-rack", "aeinrst");
     await p.click("#setup-go");
-    await p.waitForFunction(() => G && G.mode === "analysis" && S && !busy, null, { timeout: 60000 });
+    await waitFor(p, "hand-set board analysis", () => p.waitForFunction(() => G && G.mode === "analysis" && S && !busy, null, { timeout: 60000 }));
     check(await p.evaluate(() => S.board[7].includes("QUIZ") && S.rack === "AEINRST"), "a board set up by hand is analysed as entered");
 
     // Tournament rules (WESPA, 5 points a word): words are not marked as they are placed, a
@@ -195,7 +238,7 @@ async function launch() {
     check(await p.evaluate(() => settings.clock === "25" && settings.overtime === "wespa"), "WESPA rules bring a 25-minute clock with WESPA's overtime");
     await p.click('#start [data-name="clock"] [data-v="0"]');
     await p.click("#btn-start");
-    await myTurn();
+    await myTurn("tournament game starts");
     const phony = await p.evaluate(async () => {
       const rack = S.rack.replace(/\?/g, "");
       for (const a of rack) for (const b of rack) {
@@ -206,22 +249,22 @@ async function launch() {
     });
     check(!!phony, "a play with a word not in the list is found (" + phony + ")");
     await p.evaluate((m) => showHint(m), phony);
-    await p.waitForFunction(() => !document.getElementById("btn-play").disabled, null, { timeout: 10000 });
+    await waitFor(p, "tournament phony ready to play", () => p.waitForFunction(() => !document.getElementById("btn-play").disabled, null, { timeout: PLAY_READY_TIMEOUT }));
     check(await p.evaluate(() => !document.querySelector("#status .bad, #status .wchip.bad") && !badSquares()), "under tournament rules the word is not marked as you place it");
     await p.click("#btn-play");
-    await myTurn();
+    await myTurn("tournament reply to phony");
     check(await p.evaluate(() => S.history[0].type === "phony" && S.you === 0 && G.record[0].move === "phony " + S.history[0].move),
       "the phony comes off and scores nothing, and the record keeps it");
     // Play on until Tilefish makes a play of tiles, then challenge it (all its words).
     for (let i = 0; i < 6 && !(await p.evaluate(() => canChallenge())); i++) {
       const mv = await p.evaluate(async () => (await ui("moves 1")).moves[0].move);
       await p.evaluate((m) => playMove(m), mv);
-      await myTurn();
+      await myTurn("tournament turn " + (i + 1));
     }
     const before = await p.evaluate(async () => ({ bot: S.bot, words: (await ui("lastwords")).words.length, n: G.record.length }));
     await p.click("#btn-challenge");
     if (before.words > 1) await p.click('#status [data-w="*"]');
-    await p.waitForFunction((b) => S.bot === b.bot + 5 * b.words, before, { timeout: 10000 });
+    await waitFor(p, "tournament challenge points", () => p.waitForFunction((b) => S.bot === b.bot + 5 * b.words, before, { timeout: 10000 }));
     check(await p.evaluate((b) => / bonus \d+$/.test(G.record[b.n - 1].move) && document.getElementById("btn-challenge").disabled, before),
       "an unsuccessful challenge gives Tilefish 5 points a word (" + 5 * before.words + "), kept in the record");
     const linked = await p.evaluate(async () => JSON.stringify((await unpackGame(await packGame(G))).record.map((e) => e.move)) === JSON.stringify(G.record.map((e) => e.move)));
@@ -229,9 +272,9 @@ async function launch() {
     // A take-back replays the record: the challenge's points stay with Tilefish's move.
     const mv2 = await p.evaluate(async () => (await ui("moves 1")).moves[0].move);
     await p.evaluate((m) => playMove(m), mv2);
-    await myTurn();
+    await myTurn("tournament reply before take-back");
     await p.click("#btn-takeback");
-    await p.waitForFunction((b) => S && !busy && G.record.length === b.n && S.history.length === b.n, before, { timeout: 30000 });
+    await waitFor(p, "tournament take-back", () => p.waitForFunction((b) => S && !busy && G.record.length === b.n && S.history.length === b.n, before, { timeout: 30000 }));
     check(await p.evaluate((b) => S.bot === b.bot + 5 * b.words, before), "after a take-back the challenge's points are still Tilefish's");
 
     // A player's own copy of a tournament list: loaded from the device, kept there, played with
@@ -244,12 +287,12 @@ async function launch() {
     check(await p.evaluate(() => !document.getElementById("own-row").hidden && /does not provide it/.test(document.getElementById("lex-note").textContent)),
       "NWL 2023 is not provided: the start card offers to load your own copy");
     await p.setInputFiles("#own-file", { name: "my-nwl.txt", mimeType: "text/plain", buffer: fs.readFileSync(path.join(__dirname, "..", "ENABLE.txt")) });
-    await p.waitForFunction(() => /is ready: 168,551 words/.test(document.getElementById("own-status").textContent), null, { timeout: 120000 });
+    await waitFor(p, "own word list compiled", () => p.waitForFunction(() => /is ready: 168,551 words/.test(document.getElementById("own-status").textContent), null, { timeout: 120000 }));
     check(true, "your own copy is read, compiled and kept on this device (168,551 words)");
     await p.click('#start [data-name="rules"] [data-v="checked"]');
     await p.click('#start [data-name="clock"] [data-v="0"]');
     await p.click("#btn-start");
-    await myTurn();
+    await myTurn("game with own word list starts");
     const own = await p.evaluate(async () => ({ lex: S.lexicon, leaves: await call({ run: "leaves" }) }));
     const elsewhere = seen.filter((u) => !u.startsWith(base) && !u.startsWith("data:") && !u.startsWith("blob:"));
     check(own.lex === "NWL23" && /NWL23\.klv2/.test(own.leaves) && elsewhere.length === 0,
