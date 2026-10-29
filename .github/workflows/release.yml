@@ -26,14 +26,14 @@ jobs:
     env:
       PKG: tilefish-${{ inputs.tag }}-${{ matrix.name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build (Linux, static, any x86-64 processor from about 2009 on)
         if: runner.os == 'Linux'
         run: g++ -O3 -march=x86-64-v2 -std=c++17 -pthread -static tilefish.cpp -o tilefish
       - name: Build (macOS 11 or later, Apple silicon and Intel in one file)
         if: runner.os == 'macOS'
         run: clang++ -O3 -std=c++17 -pthread -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 tilefish.cpp -o tilefish
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         if: runner.os == 'Windows'
       - name: Build (Windows, no runtime libraries needed)
         if: runner.os == 'Windows'
@@ -47,13 +47,13 @@ jobs:
       - name: Upload the unsigned program for signing
         id: unsigned
         if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unsigned-${{ matrix.name }}
           path: tilefish.exe
       - name: Sign with SignPath (waits for the owner's approval in SignPath)
         if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@ced31329c0317e779dad2eec2a7c3bb46ea1343e # v1
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -93,7 +93,7 @@ jobs:
           grep -q "lexicon CSW24" out.txt
           grep -q "leave values: .*CSW24.klv2" out.txt
           grep -q "win model from CSW24.win" out.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.name }}
           path: ${{ env.PKG }}.zip
@@ -101,7 +101,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
