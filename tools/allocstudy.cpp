@@ -26,6 +26,10 @@
 #include "../tilefish.cpp"
 #undef main
 #include <cstdio>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 using namespace tf;
 
@@ -46,7 +50,15 @@ struct Dump {
 };
 
 bool save(const std::string& path, const Dump& D) {
+#ifdef _WIN32
   FILE* f = std::fopen(path.c_str(), "wb");
+#else
+  // Readable by others but writable only by the owner. fopen would create the file as
+  // 0666 less the umask, which leaves it world-writable wherever the umask is 0.
+  int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  FILE* f = fd < 0 ? nullptr : ::fdopen(fd, "wb");
+  if (fd >= 0 && !f) ::close(fd);
+#endif
   if (!f) return false;
   bool ok = std::fwrite(&D.C, sizeof(int), 1, f) == 1 && std::fwrite(&D.N, sizeof(int), 1, f) == 1 &&
             std::fwrite(&D.bag, sizeof(int), 1, f) == 1 && std::fwrite(D.st.data(), sizeof(float), D.C, f) == (size_t)D.C;
