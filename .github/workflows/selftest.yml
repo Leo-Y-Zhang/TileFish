@@ -2,6 +2,9 @@ name: selftest
 on:
   push:
   pull_request:
+# Both jobs only check out, build and run: the token needs nothing more than read.
+permissions:
+  contents: read
 jobs:
   build-and-test:
     strategy:
