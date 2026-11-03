@@ -11,8 +11,9 @@ UI. It uses only the C++ standard library.
 
 **Tilefish 2.2** plays tournament lexicons (CSW24, NWL23) straight from `.kwg` files.
 Its simulation is about 3.5 times as fast as 2.0's and 8 times as fast as 1.0's, a
-little faster than MAGPIE's on the same positions, and every shortcut is checked against
-brute force. Under a neutral referee it has played both of the Woogles team's engines:
+little faster than MAGPIE's on the same positions; differential tests compare optimized
+searches with brute force or full generation on sampled positions, but are not proofs.
+Under a neutral referee it has played both of the Woogles team's engines:
 **MAGPIE**, their open-source C engine, and **Macondo** with the settings of BestBot,
 which Woogles calls the best crossword-game engine it knows of. On one core at 1 to 20
 seconds a move, Tilefish won 57.1% of 760 CSW24 games against MAGPIE's full search, and
@@ -75,9 +76,9 @@ your device) and a clock:
 Five strengths, from Beginner and Easy (which pick weaker moves on purpose, for learning) to
 Casual, Strong and Champion; a **daily puzzle** (find the best move) and a **daily endgame**,
 the same for everyone on the day, more puzzles of the first kind and **endgame puzzles** (the
-bag empty, the opponent's tiles known, only the best play solves it, as the exact endgame
-solver finds); and your **stats** over
-time. Click a square and type, drag tiles, or tap a tile and then a square; Enter plays. As
+bag empty, the opponent's tiles known, only the best play solves it, as found by the endgame
+solver, which is exact within the searched depth, with greedy estimates at the depth
+limit); and your **stats** over time. Click a square and type, drag tiles, or tap a tile and then a square; Enter plays. As
 you place tiles, every word the move makes is listed with its points and bonus squares, and
 (under Casual rules) a word not in the list turns red on the board. Practice rates each move once Tilefish has
 answered and gives hints in steps (a nudge, then where, then the moves), and can estimate what
@@ -237,7 +238,7 @@ tilefish> rack AEINST?             # change the rack of the player to move
 tilefish> gen 20                   # top 20 moves by static equity
 tilefish> sim 20                   # simulate for 20 seconds
 tilefish> go                       # what the engine would play, and why
-tilefish> endgame                  # exact endgame solution (bag empty)
+tilefish> endgame                  # bag empty: exact within the searched depth, with greedy estimates at the depth limit
 tilefish> peg                      # pre-endgame: exactly one tile in the bag
 ```
 
@@ -262,8 +263,9 @@ Player 2: 12 moves, engine's choice 7 times, total win% lost 5.5, spread lost 58
 
 (Above: a fast self-play game reviewed at one second per move.) For every move whose
 rack is recorded in the `.gcg` file, Tilefish analyses the position (simulation in the
-midgame, the pre-endgame solver with one tile in the bag, the exact solver in the
-endgame) and reports how much win probability and spread the move cost.
+midgame, the pre-endgame solver with one tile in the bag, the endgame solver, exact
+within the searched depth, with greedy estimates at the depth limit) and reports how much
+win probability and spread the move cost.
 `?` marks a 2-5% mistake, `??` more than 5%. The last column is player 1's winning chance
 with best play from that position, which is the data behind a broadcast win graph.
 Games from Woogles and Quackle can be downloaded as `.gcg`; games you play against
@@ -296,7 +298,8 @@ endgame), whether the result is proven exact, and for every candidate its score,
 leave, static equity, simulated/solved value and win probability. A solved endgame also gives
 `line`, the best play to the end; there only the best move's value is proven, and the
 others' are upper bounds (`ui hint` and `ui review`, which the browser version uses, solve
-the five shown exactly and give the line after the move played as `playedLine`). This is
+the five shown within the searched depth, with greedy estimates at the depth limit,
+and give the line after the move played as `playedLine`). This is
 enough to drive a live win-probability bar for a broadcast, or a web front-end.
 
 For engine-vs-engine play there is a UCI-style exchange:
@@ -551,9 +554,10 @@ engine gained from that point on:
 | From an empty bag (endgame only) | 200 | +0.3 ± 0.3 | 50.0% |
 
 On the same positions, the build before the review fixes gained +12.3 ± 4.6 from
-7 tiles and +0.8 ± 1.4 from 1 tile. Both engines solve almost every endgame exactly,
-so the endgame is a draw between them, and with one tile in the bag they are nearly
-even. The pre-endgame from 2 to 7 tiles is where Tilefish pulls ahead: its simulations
+7 tiles and +0.8 ± 1.4 from 1 tile. The endgame results are nearly even between them,
+as are the results with one tile in the bag; Tilefish's endgame search is exact within
+the searched depth, with greedy estimates at the depth limit. The pre-endgame from 2
+to 7 tiles is where Tilefish pulls ahead: its simulations
 play every line out to the end. That is worth about 15 points a game here, against
 MAGPIE's dedicated pre-endgame solver at the same time per move.
 
@@ -574,8 +578,9 @@ What this shows, and what it does not:
   scored 51.0% ± 14.6 over 50 games while thinking only 1.06 s a move against
   MAGPIE's 4.4 s: its simulation stopped as soon as one candidate was statistically
   ahead, which four threads reach early. It now keeps the closest challenger in play
-  and spends the whole budget. On the same deals it then scored 55.0% ± 13.3
-  (+19.2 ± 21.5 points a game), thinking 3.9 s a move against MAGPIE's 4.4 s.
+  to continue sampling while time and iteration limits allow. On the same deals it
+  then scored 55.0% ± 13.3 (+19.2 ± 21.5 points a game), thinking 3.9 s a move against
+  MAGPIE's 4.4 s.
   2.1, three and a half times as fast, then ran into a leftover cap of 20,000
   iterations per candidate after about 2 s and stopped there (1.8 s a move against
   MAGPIE's 4.5 s). With the cap lifted it scored 50.0% ± 11.3 (+16.7 ± 23.3 points a
@@ -722,11 +727,15 @@ Here is where Tilefish stands on each requirement:
 | Requirement | Tilefish today |
 |---|---|
 | Official lexicons (CSW for WESPA/world championship, NWL for NASPA) | Any word list or `.kwg` file, with `.klv2` leaves; `train` learns leave values for it. You supply the licensed list. |
-| Correct rules and scoring | Move generator verified against brute force (every word at every position), the fast best-play search against full generation, the endgame solver against plain minimax; `selftest` re-runs all of it. An independent referee checked every move of the MAGPIE matches. |
+| Correct rules and scoring | Differential tests on sampled positions compare the move generator against brute force (every word at every position), the fast best-play search against full generation, and the endgame solver against plain minimax; `selftest` re-runs these checks, which are not proofs. Known limitation: the endgame search and its minimax reference treat two consecutive passes as game over (and also stop after six consecutive scoreless turns), while the game runner uses six consecutive scoreless turns rather than two passes. An independent referee checked every move of the MAGPIE matches. |
 | Standard formats | GCG game records (read, write, review), CGP positions, KLV/KLV2 leave files. |
 | Machine interface for broadcasts and GUIs | `--quiet` mode with one-line JSON analyses (win %, spread, every candidate). |
 | Post-game analysis | `review`: every move vs the engine, with win % lost and a win-probability timeline. |
 | Proven playing strength | **Partly.** Against MAGPIE: 57.1% ± 3.1 on one core at 1–20 s a move (760 CSW24 games), 68.5% ± 8.9 on NWL23 (100 games), 51.5% ± 6.4 with four threads each at 5 s a move (200 games). Against Macondo with BestBot's settings at 20 s a move: level on wins, 49.9% of 400 games and 52.3% of 400 more (October 2026; an earlier 55.0% of 100 games did not reproduce). With four threads each at 60 s a move: level within the interval, 48.6% (45.8% to 51.4%) of 832 games. |
+
+Known limitation: concurrent endgame search threads share transposition tables through
+non-atomic reads and writes, with checksums to detect inconsistent entries; these
+accesses still constitute a C++ data race, and checksums do not make them safe.
 
 The last row is the whole job. The plan, in order of expected payoff:
 
@@ -765,7 +774,7 @@ The last row is the whole job. The plan, in order of expected payoff:
 | Note | In the engine |
 |---|---|
 | "Deviance is poorly priced points of letters that can be filtered from noise" | Learned leave values (§7, §17): self-play measures what tiles are really worth. |
-| "There are only endgames - no Scholar's Mate" | Exact endgame solver (§12) plus the pre-endgame solver (§13). |
+| "There are only endgames - no Scholar's Mate" | Endgame solver (§12), exact within the searched depth, with greedy estimates at the depth limit, plus the pre-endgame solver (§13). |
 | "Use Set Dictionary for English lexicon" | Any word list compiles to a DAWG + GADDAG at start-up (§3). |
 | "Use Stockfish for positional analysis" | Stockfish-style search tools: iterative deepening, transposition table, PVS, Lazy SMP threads (§12). |
 | "Search only needs to search through possible ones" | The GADDAG only ever builds legal words, and shadow bounds skip anchors that can't matter (§9). |
@@ -798,11 +807,12 @@ The last row is the whole job. The plan, in order of expected payoff:
 | 18-19 | CGP/GCG and the command-line interface |
 | 20-21 | self-tests, benchmarks, `main` |
 
-Run `selftest` after changing the move generator. It checks the generator against a
-brute-force generator that tries every word everywhere, the fast best-play search
-against full generation (`verifybest`), the endgame solver against plain minimax and
-its move lists against full generation (`verifyendgame`). `benchgen`, `benchsim` and
-`benchendgame` measure speed on fixed positions.
+Run `selftest` after changing the move generator. It runs differential tests on
+sampled positions, comparing the generator against a brute-force generator that
+tries every word everywhere, the fast best-play search against full generation
+(`verifybest`), the endgame solver against plain minimax and its move lists against
+full generation (`verifyendgame`); these checks are not proofs. `benchgen`, `benchsim`
+and `benchendgame` measure speed on fixed positions.
 
 ## What changed in 2.2
 
@@ -873,13 +883,16 @@ its move lists against full generation (`verifyendgame`). `benchgen`, `benchsim`
   counting rack values.
 * **Engine protocol and match tools**: `position cgp` / `go movetime` / `bestmove`,
   `tools/referee.py`, and `tools/magpie_bot.c` for head-to-head matches.
-* **Time control**: every move keeps to its budget and uses it.
+* **Time control**: searches aim for the time budget, but candidate generation cannot
+  be interrupted and simulation finishes its current batch before checking the clock,
+  so moves can exceed the budget; iteration limits can also stop a search early.
   * The one-tile pre-endgame solver first values every candidate with both sides
     playing greedily to the end, then searches the leaders one ply deeper at a time,
     all to the same depth, while time allows. Positions with a blank on the rack used
     to take up to 11 s for a 1 s budget.
   * The simulation keeps the closest challenger in play instead of stopping once one
-    candidate is ahead, so a 5 s budget is actually spent. Inference of the opponent's
+    candidate is ahead, continuing until the time or iteration limit is reached
+    (or only one candidate remains). Inference of the opponent's
     rack counts against the same budget.
 * **Training**: `train leaves=0` refits only the win model; `CSW24.win` and
   `NWL23.win` ship with it.
