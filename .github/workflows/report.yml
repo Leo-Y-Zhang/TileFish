@@ -43,8 +43,8 @@ jobs:
           find "$RUNNER_TEMP/dl" -type f -name 'shard-*.jsonl' | LC_ALL=C sort | xargs cat > "$RUNNER_TEMP/$name.jsonl"
           test -s "$RUNNER_TEMP/$name.jsonl"
           gzip -9 -n -c "$RUNNER_TEMP/$name.jsonl" > "$RUNNER_TEMP/$name.jsonl.gz"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "Leo Y. Zhang"
+          git config user.email "268190724+Leo-Y-Zhang@users.noreply.github.com"
           # Several runs can finish together: start again from the newest main until the push lands.
           for i in 1 2 3 4 5 6; do
             git fetch -q origin main && git reset -q --hard origin/main
